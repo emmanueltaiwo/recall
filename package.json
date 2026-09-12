@@ -1,6 +1,6 @@
 {
-  "name": "recall",
-  "displayName": "Recall",
+  "name": "cursor-recall",
+  "displayName": "Cursor Recall",
   "description": "Keep Cursor chat history connected when projects move — browse, export, and restore chats locally.",
   "version": "0.1.0",
   "publisher": "emmanueltaiwo",
