@@ -38,7 +38,7 @@ Press **F5** to launch an Extension Development Host.
 npm run package
 ```
 
-Creates a `.vsix` you can install with `cursor --install-extension cursor-recall-0.1.1.vsix`.
+Creates a `.vsix` you can install with `cursor --install-extension cursor-recall-0.1.3.vsix`.
 
 ## Privacy
 

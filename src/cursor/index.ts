@@ -23,7 +23,6 @@ export {
 } from "./chats";
 export {
   restoreComposersToWorkspace,
-  repairComposerDataWorkspaces,
   listRecentBackups,
   type RestoreResult,
   type RestoreTargetWorkspace,

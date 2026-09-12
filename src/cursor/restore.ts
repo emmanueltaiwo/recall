@@ -55,6 +55,9 @@ export function restoreComposersToWorkspace(options: {
         const updateComposerData = db.prepare(
           `UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
         );
+        const selectBubble = db.prepare(
+          `SELECT value FROM cursorDiskKV WHERE key = ?`,
+        );
 
         const workspaceIdentifier = {
           id: options.target.cursorWorkspaceId,
@@ -91,9 +94,10 @@ export function restoreComposersToWorkspace(options: {
           }
 
           update.run(options.target.cursorWorkspaceId, valueJson, composerId);
-          patchComposerDataWorkspace({
+          remapComposerData({
             selectComposerData,
             updateComposerData,
+            selectBubble,
             composerId,
             workspaceIdentifier,
           });
@@ -133,136 +137,96 @@ export function restoreComposersToWorkspace(options: {
   }
 }
 
-/**
- * Earlier restores only remapped composerHeaders, leaving composerData on the
- * old workspace id — Cursor then drops most assistant turns in the UI.
- * Heal any headers already pointing at `target` whose composerData still lags.
- */
-export function repairComposerDataWorkspaces(options: {
-  globalStateDbPath: string;
-  backupRoot: string;
-  target: RestoreTargetWorkspace;
-}): { repairedCount: number; backupDir?: string } {
-  if (!existsSync(options.globalStateDbPath)) {
-    return { repairedCount: 0 };
-  }
-
-  const targetUri = buildFolderUri(options.target);
-  const workspaceIdentifier = {
-    id: options.target.cursorWorkspaceId,
-    uri: {
-      $mid: 1,
-      fsPath: options.target.path,
-      external: targetUri,
-      path: options.target.path,
-      scheme: "file",
-    },
-  };
-
-  const toRepair = withSqliteRetry(options.globalStateDbPath, (db) => {
-    const candidates = db
-      .prepare(`SELECT composerId FROM composerHeaders WHERE workspaceId = ?`)
-      .all(options.target.cursorWorkspaceId) as unknown as Array<{
-      composerId: string;
-    }>;
-    const selectComposerData = db.prepare(
-      `SELECT value FROM cursorDiskKV WHERE key = ?`,
-    );
-    const ids: string[] = [];
-    for (const { composerId } of candidates) {
-      const row = selectComposerData.get(`composerData:${composerId}`) as
-        | { value: string }
-        | undefined;
-      if (!row?.value) {
-        continue;
-      }
-      try {
-        const data = JSON.parse(row.value) as Record<string, unknown>;
-        const current = data.workspaceIdentifier as { id?: string } | undefined;
-        if (current?.id === options.target.cursorWorkspaceId) {
-          continue;
-        }
-        ids.push(composerId);
-      } catch {
-        /* ignore bad JSON */
-      }
-    }
-    return ids;
-  });
-
-  if (toRepair.length === 0) {
-    return { repairedCount: 0 };
-  }
-
-  const backupDir = createBackup(options.globalStateDbPath, options.backupRoot);
-  let repairedCount = 0;
-
-  try {
-    withSqliteRetry(options.globalStateDbPath, (db) => {
-      const selectComposerData = db.prepare(
-        `SELECT value FROM cursorDiskKV WHERE key = ?`,
-      );
-      const updateComposerData = db.prepare(
-        `UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
-      );
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        for (const composerId of toRepair) {
-          if (
-            patchComposerDataWorkspace({
-              selectComposerData,
-              updateComposerData,
-              composerId,
-              workspaceIdentifier,
-            })
-          ) {
-            repairedCount += 1;
-          }
-        }
-        db.exec("COMMIT");
-      } catch (err) {
-        try {
-          db.exec("ROLLBACK");
-        } catch {
-          /* ignore */
-        }
-        throw err;
-      }
-    });
-  } catch (err) {
-    throw wrapLockError(err);
-  }
-
-  return { repairedCount, backupDir };
-}
-
-function patchComposerDataWorkspace(options: {
+function remapComposerData(options: {
   selectComposerData: { get: (key: string) => unknown };
   updateComposerData: { run: (value: string, key: string) => unknown };
+  selectBubble: { get: (key: string) => unknown };
   composerId: string;
   workspaceIdentifier: {
     id: string;
     uri: Record<string, unknown>;
   };
-}): boolean {
+}): void {
   const key = `composerData:${options.composerId}`;
   const row = options.selectComposerData.get(key) as
     | { value: string }
     | undefined;
   if (!row?.value) {
-    return false;
+    return;
   }
   try {
     const data = JSON.parse(row.value) as Record<string, unknown>;
-    const current = data.workspaceIdentifier as { id?: string } | undefined;
-    if (current?.id === options.workspaceIdentifier.id) {
-      return false;
-    }
     data.workspaceIdentifier = options.workspaceIdentifier;
+    ensureRenderableHeaders(data, (bubbleId) =>
+      readBubbleText(options.selectBubble, options.composerId, bubbleId),
+    );
     options.updateComposerData.run(JSON.stringify(data), key);
-    return true;
   } catch {
-    return false;
+    /* keep original composerData if malformed */
+  }
+}
+
+function ensureRenderableHeaders(
+  data: Record<string, unknown>,
+  bubbleText: (bubbleId: string) => string | undefined,
+): void {
+  const headers = data.fullConversationHeadersOnly;
+  if (!Array.isArray(headers)) {
+    return;
+  }
+
+  for (const header of headers) {
+    if (!header || typeof header !== "object") {
+      continue;
+    }
+    const h = header as {
+      type?: unknown;
+      bubbleId?: unknown;
+      grouping?: Record<string, unknown>;
+    };
+    if (h.type !== 1 && h.type !== 2) {
+      continue;
+    }
+
+    const grouping =
+      h.grouping && typeof h.grouping === "object" ? { ...h.grouping } : {};
+    grouping.isRenderable = true;
+    grouping.toolDisplayComputed = true;
+
+    if (typeof h.bubbleId === "string") {
+      const text = bubbleText(h.bubbleId)?.trim();
+      if (text) {
+        grouping.hasText = true;
+        if (
+          typeof grouping.textPreview !== "string" ||
+          !(grouping.textPreview as string).trim()
+        ) {
+          grouping.textPreview =
+            text.length > 240 ? `${text.slice(0, 239)}…` : text;
+        }
+      }
+    }
+
+    h.grouping = grouping;
+  }
+}
+
+function readBubbleText(
+  selectBubble: { get: (key: string) => unknown },
+  composerId: string,
+  bubbleId: string,
+): string | undefined {
+  const row = selectBubble.get(`bubbleId:${composerId}:${bubbleId}`) as
+    | { value: string }
+    | undefined;
+  if (!row?.value) {
+    return undefined;
+  }
+  try {
+    const bubble = JSON.parse(row.value) as { text?: unknown };
+    return typeof bubble.text === "string" ? bubble.text : undefined;
+  } catch {
+    return undefined;
   }
 }
 
