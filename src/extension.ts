@@ -161,6 +161,10 @@ export function activate(context: vscode.ExtensionContext): void {
               : store.listChatsForProject(result.projectId),
           );
         }
+      } else if (result.repairedChatCount > 0) {
+        void vscode.window.showInformationMessage(
+          `Repaired ${result.repairedChatCount} restored chat(s). Quit Cursor (Cmd+Q) and reopen this project to see full assistant replies.`,
+        );
       } else if (!opts?.silent) {
         void vscode.window.showInformationMessage(
           result.chatCount > 0

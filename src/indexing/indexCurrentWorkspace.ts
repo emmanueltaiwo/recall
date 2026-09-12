@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -11,6 +11,7 @@ import {
   ensureScratchDir,
   getChatMessages,
   listChatsForWorkspace,
+  repairComposerDataWorkspaces,
   resolveCursorUserDataDir,
   resolveGlobalStateDb,
   resolveWorkspaceStorageDir,
@@ -30,6 +31,8 @@ export interface IndexResult {
   previousLocation?: string;
   /** Chats still associated with a previous folder path (need Restore). */
   previousChatCount: number;
+  /** Chats healed after an incomplete prior Restore. */
+  repairedChatCount: number;
   /** Cursor workspace id for the folder currently open (if known). */
   currentCursorWorkspaceId?: string;
 }
@@ -75,10 +78,40 @@ export async function indexCurrentWorkspace(options: {
   let messageCount = 0;
   let previousLocation: string | undefined;
   let previousChatCount = 0;
+  let repairedChatCount = 0;
   let projectId = "";
   let workspaceId = "";
 
   try {
+    // Heal incomplete prior restores before we snapshot/read the DB.
+    if (exact && exact.kind === "folder") {
+      try {
+        const repair = repairComposerDataWorkspaces({
+          globalStateDbPath: stateDbPath,
+          backupRoot: join(options.globalStoragePath, "backups"),
+          target: {
+            cursorWorkspaceId: exact.cursorWorkspaceId,
+            path: exact.path ?? current.path,
+            folderUri: exact.folderUri,
+          },
+        });
+        repairedChatCount = repair.repairedCount;
+        if (repair.repairedCount > 0) {
+          warnings.push(
+            `Repaired ${repair.repairedCount} chat(s) so full assistant replies show in Cursor.`,
+          );
+          log(warnings[warnings.length - 1]!);
+          if (repair.backupDir) {
+            log(`Repair backup: ${repair.backupDir}`);
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        warnings.push(`Could not repair chat workspace links: ${msg}`);
+        log(warnings[warnings.length - 1]!);
+      }
+    }
+
     stateDb = CursorStateDb.open(stateDbPath, scratch);
     const schema = stateDb.checkSchema();
     if (!schema.ok) {
@@ -190,6 +223,7 @@ export async function indexCurrentWorkspace(options: {
     warnings,
     previousLocation,
     previousChatCount,
+    repairedChatCount,
     currentCursorWorkspaceId:
       exact && exact.kind === "folder" ? exact.cursorWorkspaceId : undefined,
   };

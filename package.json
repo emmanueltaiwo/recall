@@ -2,7 +2,7 @@
   "name": "cursor-recall",
   "displayName": "Cursor Recall",
   "description": "Keep Cursor chat history connected when projects move — browse, export, and restore chats locally.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "emmanueltaiwo",
   "license": "MIT",
   "repository": {
