@@ -1,0 +1,138 @@
+{
+  "name": "recall",
+  "displayName": "Recall",
+  "description": "Keep Cursor chat history connected when projects move — browse, export, and restore chats locally.",
+  "version": "0.1.0",
+  "publisher": "emmanueltaiwo",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "keywords": [
+    "cursor",
+    "chat",
+    "history",
+    "conversation",
+    "local-first"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "recall",
+          "title": "Recall",
+          "icon": "media/recall.svg"
+        }
+      ]
+    },
+    "views": {
+      "recall": [
+        {
+          "id": "recall.chats",
+          "name": "Chats"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "recall.chats",
+        "contents": "Recall keeps your Cursor chats connected to this project.\n\n[Refresh Index](command:recall.refreshIndex)\n\nOpen a single folder workspace to get started."
+      }
+    ],
+    "commands": [
+      {
+        "command": "recall.refreshIndex",
+        "title": "Recall: Refresh Index",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "recall.openChat",
+        "title": "Recall: Open Chat",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "recall.restoreIntoCursor",
+        "title": "Recall: Restore into Cursor History",
+        "icon": "$(history)"
+      },
+      {
+        "command": "recall.useInCursor",
+        "title": "Recall: Export for @Files",
+        "icon": "$(export)"
+      },
+      {
+        "command": "recall.exportChat",
+        "title": "Recall: Export Chat"
+      },
+      {
+        "command": "recall.copyChat",
+        "title": "Recall: Copy Chat"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "recall.refreshIndex",
+          "when": "view == recall.chats",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "recall.restoreIntoCursor",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "inline@1"
+        },
+        {
+          "command": "recall.useInCursor",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "inline@2"
+        },
+        {
+          "command": "recall.openChat",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "inline@3"
+        },
+        {
+          "command": "recall.restoreIntoCursor",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "0_primary"
+        },
+        {
+          "command": "recall.useInCursor",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "0_primary"
+        },
+        {
+          "command": "recall.exportChat",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "1_export"
+        },
+        {
+          "command": "recall.copyChat",
+          "when": "view == recall.chats && viewItem == chat",
+          "group": "1_export"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.2"
+  }
+}
