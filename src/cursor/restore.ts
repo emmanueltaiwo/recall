@@ -39,80 +39,83 @@ export function restoreComposersToWorkspace(options: {
   const backupDir = createBackup(options.globalStateDbPath, options.backupRoot);
   const targetUri = buildFolderUri(options.target);
 
-  const db = new DatabaseSync(options.globalStateDbPath);
   try {
-    db.exec("BEGIN");
-    const select = db.prepare(
-      `SELECT composerId, workspaceId, value FROM composerHeaders WHERE composerId = ?`,
-    );
-    const update = db.prepare(
-      `UPDATE composerHeaders SET workspaceId = ?, value = ? WHERE composerId = ?`,
-    );
-
-    const restored: string[] = [];
-
-    for (const composerId of options.composerIds) {
-      const row = select.get(composerId) as
-        | {
-            composerId: string;
-            workspaceId: string | null;
-            value: string | null;
-          }
-        | undefined;
-      if (!row) {
-        continue;
-      }
-
-      let valueJson = row.value ?? "{}";
+    return withSqliteRetry(options.globalStateDbPath, (db) => {
+      db.exec("BEGIN IMMEDIATE");
       try {
-        const value = JSON.parse(valueJson) as Record<string, unknown>;
-        value.workspaceIdentifier = {
-          id: options.target.cursorWorkspaceId,
-          uri: {
-            $mid: 1,
-            fsPath: options.target.path,
-            external: targetUri,
-            path: options.target.path,
-            scheme: "file",
-          },
+        const select = db.prepare(
+          `SELECT composerId, workspaceId, value FROM composerHeaders WHERE composerId = ?`,
+        );
+        const update = db.prepare(
+          `UPDATE composerHeaders SET workspaceId = ?, value = ? WHERE composerId = ?`,
+        );
+
+        const restored: string[] = [];
+
+        for (const composerId of options.composerIds) {
+          const row = select.get(composerId) as
+            | {
+                composerId: string;
+                workspaceId: string | null;
+                value: string | null;
+              }
+            | undefined;
+          if (!row) {
+            continue;
+          }
+
+          let valueJson = row.value ?? "{}";
+          try {
+            const value = JSON.parse(valueJson) as Record<string, unknown>;
+            value.workspaceIdentifier = {
+              id: options.target.cursorWorkspaceId,
+              uri: {
+                $mid: 1,
+                fsPath: options.target.path,
+                external: targetUri,
+                path: options.target.path,
+                scheme: "file",
+              },
+            };
+            valueJson = JSON.stringify(value);
+          } catch {
+            /* keep original value if not JSON */
+          }
+
+          update.run(options.target.cursorWorkspaceId, valueJson, composerId);
+          restored.push(composerId);
+        }
+
+        db.exec("COMMIT");
+
+        if (restored.length === 0) {
+          throw new Error(
+            "None of the selected chats were found in Cursor's composerHeaders table",
+          );
+        }
+
+        mergeSelectedComposers({
+          workspaceStorageDir: options.workspaceStorageDir,
+          targetWorkspaceId: options.target.cursorWorkspaceId,
+          composerIds: restored,
+        });
+
+        return {
+          backupDir,
+          restoredCount: restored.length,
+          composerIds: restored,
         };
-        valueJson = JSON.stringify(value);
-      } catch {
-        /* keep original value if not JSON */
+      } catch (err) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          /* ignore */
+        }
+        throw err;
       }
-
-      update.run(options.target.cursorWorkspaceId, valueJson, composerId);
-      restored.push(composerId);
-    }
-
-    db.exec("COMMIT");
-
-    if (restored.length === 0) {
-      throw new Error(
-        "None of the selected chats were found in Cursor's composerHeaders table",
-      );
-    }
-
-    mergeSelectedComposers({
-      workspaceStorageDir: options.workspaceStorageDir,
-      targetWorkspaceId: options.target.cursorWorkspaceId,
-      composerIds: restored,
     });
-
-    return {
-      backupDir,
-      restoredCount: restored.length,
-      composerIds: restored,
-    };
   } catch (err) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      // ignore
-    }
-    throw err;
-  } finally {
-    db.close();
+    throw wrapLockError(err);
   }
 }
 
@@ -166,8 +169,7 @@ function mergeSelectedComposers(options: {
     }
   }
 
-  const db = new DatabaseSync(wsDbPath);
-  try {
+  withSqliteRetry(wsDbPath, (db) => {
     const row = db
       .prepare(`SELECT value FROM ItemTable WHERE key = ?`)
       .get("composer.composerData") as { value: string } | undefined;
@@ -213,9 +215,56 @@ function mergeSelectedComposers(options: {
         payload,
       );
     }
-  } finally {
-    db.close();
+  });
+}
+
+function withSqliteRetry<T>(
+  dbPath: string,
+  fn: (db: DatabaseSync) => T,
+  attempts = 8,
+): T {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(dbPath);
+      db.exec("PRAGMA busy_timeout = 8000;");
+      return fn(db);
+    } catch (err) {
+      lastError = err;
+      if (!isDatabaseLockedError(err) || i === attempts - 1) {
+        throw err;
+      }
+      const waitMs = 250 * (i + 1);
+      const until = Date.now() + waitMs;
+      while (Date.now() < until) {
+        /* wait for Cursor to release the lock */
+      }
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        /* ignore */
+      }
+    }
   }
+  throw lastError;
+}
+
+function isDatabaseLockedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /database is locked|SQLITE_BUSY|unable to open database file/i.test(
+    message,
+  );
+}
+
+function wrapLockError(err: unknown): Error {
+  if (!isDatabaseLockedError(err)) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+  return new Error(
+    "Cursor is using its database right now (database is locked). Close other Cursor windows, wait a few seconds, and try Restore again — or reload this window and retry.",
+  );
 }
 
 export function listRecentBackups(backupRoot: string): string[] {

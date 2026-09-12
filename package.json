@@ -5,11 +5,17 @@
   "version": "0.1.0",
   "publisher": "emmanueltaiwo",
   "license": "MIT",
-  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emmanueltaiwo/recall.git"
+  },
+  "icon": "media/extension-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "keywords": [
     "cursor",
     "chat",
@@ -86,37 +92,37 @@
       "view/item/context": [
         {
           "command": "recall.restoreIntoCursor",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem == chatNeedsRestore",
           "group": "inline@1"
         },
         {
           "command": "recall.useInCursor",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem =~ /^chat/",
           "group": "inline@2"
         },
         {
           "command": "recall.openChat",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem =~ /^chat/",
           "group": "inline@3"
         },
         {
           "command": "recall.restoreIntoCursor",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem == chatNeedsRestore",
           "group": "0_primary"
         },
         {
           "command": "recall.useInCursor",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem =~ /^chat/",
           "group": "0_primary"
         },
         {
           "command": "recall.exportChat",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem =~ /^chat/",
           "group": "1_export"
         },
         {
           "command": "recall.copyChat",
-          "when": "view == recall.chats && viewItem == chat",
+          "when": "view == recall.chats && viewItem =~ /^chat/",
           "group": "1_export"
         }
       ]

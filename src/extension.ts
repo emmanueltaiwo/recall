@@ -15,6 +15,7 @@ import { detectCurrentWorkspace } from "./workspace/currentWorkspace";
 let store: RecallStore | undefined;
 let output: vscode.OutputChannel | undefined;
 let indexing = false;
+let currentCursorWorkspaceId: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Recall");
@@ -138,18 +139,27 @@ export function activate(context: vscode.ExtensionContext): void {
         output,
       });
       tree.setProjectId(result.projectId);
+      currentCursorWorkspaceId = result.currentCursorWorkspaceId;
+      tree.setCurrentCursorWorkspaceId(result.currentCursorWorkspaceId);
       tree.setStatus({ kind: "ready" });
       treeView.description =
         result.chatCount > 0 ? `${result.chatCount} chats` : undefined;
 
-      if (result.previousLocation) {
+      if (result.previousLocation && result.previousChatCount > 0) {
+        const unrestored = store
+          .listChatsForProject(result.projectId)
+          .filter((chat) => chatNeedsRestore(chat));
         const action = await vscode.window.showInformationMessage(
-          `Found ${result.chatCount} chat(s) from a previous folder location. Restore them into this project's Cursor history?`,
+          `Found ${result.previousChatCount} chat(s) from a previous folder location. Restore them into this project's Cursor history?`,
           "Restore into Cursor",
           "Not now",
         );
         if (action === "Restore into Cursor" && store) {
-          await runRestore(store.listChatsForProject(result.projectId));
+          await runRestore(
+            unrestored.length > 0
+              ? unrestored
+              : store.listChatsForProject(result.projectId),
+          );
         }
       } else if (!opts?.silent) {
         void vscode.window.showInformationMessage(
@@ -217,8 +227,32 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       output?.appendLine(`Restore failed: ${message}`);
-      void vscode.window.showErrorMessage(`Restore failed: ${message}`);
+      if (/database is locked|using its database/i.test(message)) {
+        void vscode.window
+          .showWarningMessage(
+            "Cursor has its database locked. Close other Cursor windows, wait a moment, then try Restore again.",
+            "Retry Restore",
+          )
+          .then((choice) => {
+            if (choice === "Retry Restore") {
+              void runRestore(usable);
+            }
+          });
+      } else {
+        void vscode.window.showErrorMessage(`Restore failed: ${message}`);
+      }
     }
+  };
+
+  const chatNeedsRestore = (chat: Chat): boolean => {
+    if (!store || !currentCursorWorkspaceId) {
+      return false;
+    }
+    const workspace = store.getWorkspace(chat.workspaceId);
+    return Boolean(
+      workspace?.cursorWorkspaceId &&
+      workspace.cursorWorkspaceId !== currentCursorWorkspaceId,
+    );
   };
 
   context.subscriptions.push(
@@ -237,14 +271,31 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         await openChatDocument(chat, store.getMessages(chat.id));
+
+        if (chatNeedsRestore(chat)) {
+          const next = await vscode.window.showInformationMessage(
+            "This chat still belongs to a previous folder location.",
+            "Restore into Cursor",
+            "Export for @Files",
+          );
+          if (next === "Restore into Cursor") {
+            await runRestore([chat]);
+          } else if (next === "Export for @Files") {
+            const filePath = await exportChat(chat, { reveal: true });
+            if (filePath) {
+              void vscode.window.showInformationMessage(
+                `Exported and copied. In Agent, use @Files → ${vscode.workspace.asRelativePath(filePath, false)}`,
+              );
+            }
+          }
+          return;
+        }
+
         const next = await vscode.window.showInformationMessage(
           chat.title,
-          "Restore into Cursor",
           "Export for @Files",
         );
-        if (next === "Restore into Cursor") {
-          await runRestore([chat]);
-        } else if (next === "Export for @Files") {
+        if (next === "Export for @Files") {
           const filePath = await exportChat(chat, { reveal: true });
           if (filePath) {
             void vscode.window.showInformationMessage(
@@ -298,6 +349,12 @@ export function activate(context: vscode.ExtensionContext): void {
         const selected = resolveChat(item);
         if (!selected) {
           void vscode.window.showErrorMessage("Select a chat to restore.");
+          return;
+        }
+        if (!chatNeedsRestore(selected)) {
+          void vscode.window.showInformationMessage(
+            "This chat already belongs to the current folder in Cursor.",
+          );
           return;
         }
 

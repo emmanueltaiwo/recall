@@ -12,9 +12,12 @@ export type TreeStatus =
 export type RecallTreeItem = ChatItem | StatusItem;
 
 export class ChatItem extends vscode.TreeItem {
-  constructor(readonly chat: Chat) {
+  constructor(
+    readonly chat: Chat,
+    opts?: { needsRestore?: boolean },
+  ) {
     super(chat.title || "Untitled chat", vscode.TreeItemCollapsibleState.None);
-    this.contextValue = "chat";
+    this.contextValue = opts?.needsRestore ? "chatNeedsRestore" : "chat";
     this.description = formatChatMeta(chat);
     this.tooltip = new vscode.MarkdownString(
       `**${escapeMd(chat.title)}**\n\n${chat.messageCount} messages · ${formatChars(chat.characterCount)}`,
@@ -46,11 +49,17 @@ export class RecallTreeProvider implements vscode.TreeDataProvider<RecallTreeIte
 
   private projectId: string | undefined;
   private status: TreeStatus = { kind: "idle" };
+  private currentCursorWorkspaceId: string | undefined;
 
   constructor(private readonly getStore: () => RecallStore | undefined) {}
 
   setStatus(status: TreeStatus): void {
     this.status = status;
+    this.refresh();
+  }
+
+  setCurrentCursorWorkspaceId(id: string | undefined): void {
+    this.currentCursorWorkspaceId = id;
     this.refresh();
   }
 
@@ -123,7 +132,15 @@ export class RecallTreeProvider implements vscode.TreeDataProvider<RecallTreeIte
       ];
     }
 
-    return chats.map((c) => new ChatItem(c));
+    return chats.map((c) => {
+      const workspace = store.getWorkspace(c.workspaceId);
+      const needsRestore = Boolean(
+        this.currentCursorWorkspaceId &&
+        workspace?.cursorWorkspaceId &&
+        workspace.cursorWorkspaceId !== this.currentCursorWorkspaceId,
+      );
+      return new ChatItem(c, { needsRestore });
+    });
   }
 }
 

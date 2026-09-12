@@ -28,6 +28,18 @@ export interface IndexResult {
   messageCount: number;
   warnings: string[];
   previousLocation?: string;
+  /** Chats still associated with a previous folder path (need Restore). */
+  previousChatCount: number;
+  /** Cursor workspace id for the folder currently open (if known). */
+  currentCursorWorkspaceId?: string;
+}
+
+interface HistorySource {
+  cursorWorkspaceId: string;
+  folderUri?: string;
+  path?: string;
+  /** Set when this source is a vanished previous folder location. */
+  previousPath?: string;
 }
 
 export async function indexCurrentWorkspace(options: {
@@ -62,6 +74,7 @@ export async function indexCurrentWorkspace(options: {
   let chatCount = 0;
   let messageCount = 0;
   let previousLocation: string | undefined;
+  let previousChatCount = 0;
   let projectId = "";
   let workspaceId = "";
 
@@ -74,7 +87,7 @@ export async function indexCurrentWorkspace(options: {
       );
     }
 
-    const source = resolveHistorySource({
+    const sources = resolveHistorySources({
       stateDb,
       discovered,
       exact,
@@ -82,16 +95,17 @@ export async function indexCurrentWorkspace(options: {
       log,
     });
 
-    if (!source) {
+    if (sources.length === 0) {
       throw new Error(
         `No Cursor chat history found for this folder.\nOpen the folder in Cursor and start a chat, then Refresh Index.`,
       );
     }
 
-    if (source.previousPath) {
-      previousLocation = source.previousPath;
+    const previousSource = sources.find((s) => s.previousPath);
+    if (previousSource?.previousPath) {
+      previousLocation = previousSource.previousPath;
       warnings.push(
-        `Using history from previous location: ${source.previousPath}`,
+        `Also using history from previous location: ${previousSource.previousPath}`,
       );
       log(warnings[warnings.length - 1]!);
     }
@@ -105,62 +119,65 @@ export async function indexCurrentWorkspace(options: {
     projectId = project.id;
     options.store.clearProjectChats(project.id);
 
-    if (exact && exact.kind === "folder") {
-      options.store.upsertWorkspace({
-        cursorWorkspaceId: exact.cursorWorkspaceId,
-        folderUri: exact.folderUri,
-        path: exact.path,
+    for (const source of sources) {
+      const workspace = options.store.upsertWorkspace({
+        cursorWorkspaceId: source.cursorWorkspaceId,
+        folderUri: source.folderUri,
+        path: source.path ?? current.path,
         projectId: project.id,
       });
-    }
-
-    const workspace = options.store.upsertWorkspace({
-      cursorWorkspaceId: source.cursorWorkspaceId,
-      folderUri: source.folderUri,
-      path: source.path ?? current.path,
-      projectId: project.id,
-    });
-    workspaceId = workspace.id;
-
-    const summaries = listChatsForWorkspace(stateDb, source.cursorWorkspaceId);
-    log(
-      `Found ${summaries.length} chat(s) with content in workspace ${source.cursorWorkspaceId}`,
-    );
-
-    for (const summary of summaries) {
-      try {
-        const messages = getChatMessages(stateDb, summary.cursorChatId);
-        if (messages.length === 0) {
-          continue;
-        }
-        options.store.replaceChatWithMessages({
-          projectId: project.id,
-          workspaceId: workspace.id,
-          cursorChatId: summary.cursorChatId,
-          title: summary.title,
-          isArchived: summary.isArchived,
-          createdAt: summary.createdAt,
-          updatedAt: summary.updatedAt,
-          messages,
-        });
-        chatCount += 1;
-        messageCount += messages.length;
-      } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : "unknown chat parse error";
-        warnings.push(`Skipped chat ${summary.cursorChatId}: ${msg}`);
-        log(warnings[warnings.length - 1]!);
+      if (!workspaceId || !source.previousPath) {
+        workspaceId = workspace.id;
       }
-    }
 
-    options.store.upsertWorkspace({
-      cursorWorkspaceId: source.cursorWorkspaceId,
-      chatCountMeta: chatCount,
-      projectId: project.id,
-      path: source.path ?? current.path,
-      folderUri: source.folderUri,
-    });
-    options.store.markDeepIndexed(workspace.id);
+      const summaries = listChatsForWorkspace(
+        stateDb,
+        source.cursorWorkspaceId,
+      );
+      log(
+        `Found ${summaries.length} chat(s) with content in workspace ${source.cursorWorkspaceId}`,
+      );
+
+      let sourceChatCount = 0;
+      for (const summary of summaries) {
+        try {
+          const messages = getChatMessages(stateDb, summary.cursorChatId);
+          if (messages.length === 0) {
+            continue;
+          }
+          options.store.replaceChatWithMessages({
+            projectId: project.id,
+            workspaceId: workspace.id,
+            cursorChatId: summary.cursorChatId,
+            title: summary.title,
+            isArchived: summary.isArchived,
+            createdAt: summary.createdAt,
+            updatedAt: summary.updatedAt,
+            messages,
+          });
+          chatCount += 1;
+          sourceChatCount += 1;
+          messageCount += messages.length;
+          if (source.previousPath) {
+            previousChatCount += 1;
+          }
+        } catch (err) {
+          const msg =
+            err instanceof Error ? err.message : "unknown chat parse error";
+          warnings.push(`Skipped chat ${summary.cursorChatId}: ${msg}`);
+          log(warnings[warnings.length - 1]!);
+        }
+      }
+
+      options.store.upsertWorkspace({
+        cursorWorkspaceId: source.cursorWorkspaceId,
+        chatCountMeta: sourceChatCount,
+        projectId: project.id,
+        path: source.path ?? current.path,
+        folderUri: source.folderUri,
+      });
+      options.store.markDeepIndexed(workspace.id);
+    }
   } finally {
     stateDb?.dispose();
   }
@@ -172,39 +189,56 @@ export async function indexCurrentWorkspace(options: {
     messageCount,
     warnings,
     previousLocation,
+    previousChatCount,
+    currentCursorWorkspaceId:
+      exact && exact.kind === "folder" ? exact.cursorWorkspaceId : undefined,
   };
 }
 
-function resolveHistorySource(input: {
+function resolveHistorySources(input: {
   stateDb: CursorStateDb;
   discovered: DiscoveredWorkspace[];
   exact: DiscoveredWorkspace | undefined;
   currentPath: string;
   log: (msg: string) => void;
-}):
-  | {
-      cursorWorkspaceId: string;
-      folderUri?: string;
-      path?: string;
-      previousPath?: string;
-    }
-  | undefined {
-  const exactCount =
-    input.exact && input.exact.kind === "folder"
-      ? countChatsWithContent(input.stateDb, input.exact.cursorWorkspaceId)
-      : 0;
+}): HistorySource[] {
+  const sources: HistorySource[] = [];
 
-  if (input.exact && input.exact.kind === "folder" && exactCount > 0) {
-    input.log(
-      `Using exact workspace match ${input.exact.cursorWorkspaceId} (${exactCount} chats)`,
+  if (input.exact && input.exact.kind === "folder") {
+    const exactCount = countChatsWithContent(
+      input.stateDb,
+      input.exact.cursorWorkspaceId,
     );
-    return {
+    input.log(
+      `Exact workspace match ${input.exact.cursorWorkspaceId} (${exactCount} chats)`,
+    );
+    sources.push({
       cursorWorkspaceId: input.exact.cursorWorkspaceId,
       folderUri: input.exact.folderUri,
       path: input.exact.path,
-    };
+    });
   }
 
+  const previous = findBestVanishedPrevious(input);
+  if (
+    previous &&
+    !sources.some((s) => s.cursorWorkspaceId === previous.cursorWorkspaceId)
+  ) {
+    input.log(
+      `Including previous location ${previous.previousPath} (${countChatsWithContent(input.stateDb, previous.cursorWorkspaceId)} chats)`,
+    );
+    sources.push(previous);
+  }
+
+  return sources;
+}
+
+function findBestVanishedPrevious(input: {
+  stateDb: CursorStateDb;
+  discovered: DiscoveredWorkspace[];
+  exact: DiscoveredWorkspace | undefined;
+  currentPath: string;
+}): HistorySource | undefined {
   const base = basename(normalizePath(input.currentPath)).toLowerCase();
   const candidates = input.discovered.filter((w) => {
     if (w.kind !== "folder" || !w.path) {
@@ -220,11 +254,14 @@ function resolveHistorySource(input: {
     | {
         workspace: DiscoveredWorkspace;
         count: number;
-        score: number;
       }
     | undefined;
 
   for (const candidate of candidates) {
+    // Only treat vanished paths as "moved project" history — not live clones.
+    if (!candidate.path || existsSync(candidate.path)) {
+      continue;
+    }
     const count = countChatsWithContent(
       input.stateDb,
       candidate.cursorWorkspaceId,
@@ -232,34 +269,21 @@ function resolveHistorySource(input: {
     if (count === 0) {
       continue;
     }
-    const oldPathGone = candidate.path ? !existsSync(candidate.path) : false;
-    const score = count + (oldPathGone ? 1_000_000 : 0);
-    if (!best || score > best.score) {
-      best = { workspace: candidate, count, score };
+    if (!best || count > best.count) {
+      best = { workspace: candidate, count };
     }
   }
 
-  if (best) {
-    input.log(
-      `Exact path has ${exactCount} chats; falling back to ${best.workspace.path} (${best.count} chats)`,
-    );
-    return {
-      cursorWorkspaceId: best.workspace.cursorWorkspaceId,
-      folderUri: best.workspace.folderUri,
-      path: best.workspace.path,
-      previousPath: best.workspace.path,
-    };
+  if (!best) {
+    return undefined;
   }
 
-  if (input.exact && input.exact.kind === "folder") {
-    return {
-      cursorWorkspaceId: input.exact.cursorWorkspaceId,
-      folderUri: input.exact.folderUri,
-      path: input.exact.path,
-    };
-  }
-
-  return undefined;
+  return {
+    cursorWorkspaceId: best.workspace.cursorWorkspaceId,
+    folderUri: best.workspace.folderUri,
+    path: best.workspace.path,
+    previousPath: best.workspace.path,
+  };
 }
 
 function findWorkspaceForPath(
